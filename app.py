@@ -1,170 +1,186 @@
-import os, time, urllib.request
-import numpy as np
+# ============================================================
+# COMP7707 A3 - Streamlit Dashboard (Final v9 - Fixed Grid Layout)
+# Member A - System Design & Implementation
+# ============================================================
+
+import os
+import time
+import psutil
 import pandas as pd
 import streamlit as st
-from sklearn.ensemble import IsolationForest
-from sklearn.svm import OneClassSVM
-from sklearn.preprocessing import StandardScaler
+from datetime import datetime
 
-# ============================================================
+# ------------------------------------------------------------
 # 0. CONFIG
-# ============================================================
-DATA_URL = (
-    "https://data.gov.au/data/dataset/"
-    "southern-grampians-weather-sensor-data/resource/"
-    "82a5e953-00dc-42d6-9c07-3066bf800be3/"
-    "download/SGSC_Weather_Sensor_Data.csv"
+# ------------------------------------------------------------
+OUTPUT_FILE = "stream_output.csv"
+
+st.set_page_config(page_title="🌦️ IoT Weather Anomaly Dashboard", layout="wide")
+
+# Custom CSS (fix alignment)
+st.markdown("""
+    <style>
+        /* Center header */
+        h1 { text-align: center; }
+
+        /* Make metric boxes equal width and aligned */
+        div[data-testid="stMetric"] {
+            background-color: rgba(32, 32, 32, 0.6);
+            border-radius: 10px;
+            padding: 10px 0;
+            text-align: center;
+            height: 100px;
+            justify-content: center;
+        }
+
+        div[data-testid="stHorizontalBlock"] > div {
+            flex: 1 1 0% !important;
+            min-width: 180px !important;
+        }
+    </style>
+""", unsafe_allow_html=True)
+
+st.markdown(
+    "<h1>🌦️ Real-time IoT Weather Anomaly Detection Dashboard</h1>",
+    unsafe_allow_html=True
 )
-LOCAL_PATH = "SGSC_Weather_Sensor_Data.csv"
 
-st.set_page_config(page_title="🌦️ IoT Weather Anomaly Detection", layout="wide")
-st.title("🌦️ Real-time IoT Weather Anomaly Detection Prototype")
+# ------------------------------------------------------------
+# 1. SIDEBAR CONTROLS
+# ------------------------------------------------------------
+st.sidebar.header("⚙️ Dashboard Controls")
+refresh_sec = st.sidebar.slider("Auto-refresh interval (seconds)", 2, 20, 5)
+max_rows = st.sidebar.slider("Rows to display in charts", 50, 1000, 300, step=50)
+show_table = st.sidebar.checkbox("Show anomaly table", True)
+show_all = st.sidebar.checkbox("Show all features", False)
+auto_refresh = st.sidebar.checkbox("🔁 Auto refresh", True)
 
-# ============================================================
-# 1. LOAD DATA
-# ============================================================
-@st.cache_data
-def load_data():
-    """Download & clean dataset."""
-    if not os.path.exists(LOCAL_PATH):
-        st.info("⬇️ Downloading dataset from data.gov.au ...")
-        urllib.request.urlretrieve(DATA_URL, LOCAL_PATH)
-    df = pd.read_csv(LOCAL_PATH, low_memory=False)
-    df.columns = df.columns.str.lower().str.strip()
+# ------------------------------------------------------------
+# 2. LOAD DATA
+# ------------------------------------------------------------
+@st.cache_data(ttl=5)
+def load_data(path: str):
+    if not os.path.exists(path):
+        return None
+    try:
+        df = pd.read_csv(path)
+        if "Time" in df.columns:
+            df["Time"] = pd.to_datetime(df["Time"], errors="coerce")
+        return df
+    except Exception as e:
+        st.error(f"Error reading file: {e}")
+        return None
 
-    # Parse datetime
-    if "time" in df.columns:
-        df["time"] = pd.to_datetime(df["time"], format="%Y%m%d%H%M%S", errors="coerce")
+# ------------------------------------------------------------
+# 3. UPDATE DASHBOARD
+# ------------------------------------------------------------
+def update_dashboard(df):
+    if df is None or len(df) == 0:
+        st.info("⚠️ Waiting for stream data...")
+        return
+
+    df_disp = df.tail(max_rows).copy()
+
+    # --- Metrics calculation ---
+    n_if = int(df_disp["IF_Flag"].sum()) if "IF_Flag" in df_disp.columns else 0
+    n_oc = int(df_disp["OC_Flag"].sum()) if "OC_Flag" in df_disp.columns else 0
+    n_gt = int(df_disp["GT_Label"].sum()) if "GT_Label" in df_disp.columns else 0
+
+    # Combine anomalies to prevent >100%
+    if "IF_Flag" in df_disp.columns and "OC_Flag" in df_disp.columns:
+        union_anoms = sum((df_disp["IF_Flag"] == 1) | (df_disp["OC_Flag"] == 1))
     else:
-        for c in df.columns:
-            if "date" in c:
-                df[c] = pd.to_datetime(df[c], errors="coerce")
-                df.rename(columns={c: "time"}, inplace=True)
+        union_anoms = n_if + n_oc
 
-    df = df.dropna(subset=["time"]).sort_values("time")
-    features = [
-        f
-        for f in ["airtemp", "relativehumidity", "windspeed", "solar", "vapourpressure"]
-        if f in df.columns
+    anomaly_ratio = round((union_anoms / len(df_disp)) * 100, 2)
+    agree = (
+        sum((df_disp["IF_Flag"] == 1) & (df_disp["OC_Flag"] == 1)) / len(df_disp)
+        if "IF_Flag" in df_disp.columns and "OC_Flag" in df_disp.columns
+        else 0
+    ) * 100
+
+    cpu = psutil.cpu_percent()
+    mem = psutil.Process(os.getpid()).memory_info().rss / 1e6
+    file_size = os.path.getsize(OUTPUT_FILE) / 1024
+
+    # --------------------------------------------------------
+    # KPI ROW 1 (Fixed Alignment)
+    # --------------------------------------------------------
+    col1, col2, col3, col4, col5 = st.columns(5)
+    with col1:
+        st.metric("📊 Total Records", len(df))
+    with col2:
+        st.metric("🚨 IF Alerts", n_if)
+    with col3:
+        st.metric("⚠️ OCSVM Alerts", n_oc)
+    with col4:
+        st.metric("🧪 Synthetic Anomalies", n_gt)
+    with col5:
+        st.metric("💾 File Size (KB)", f"{file_size:.1f}")
+
+    # --------------------------------------------------------
+    # KPI ROW 2
+    # --------------------------------------------------------
+    col6, col7, col8 = st.columns(3)
+    with col6:
+        st.metric("🤝 Model Agreement (%)", f"{agree:.2f}")
+    with col7:
+        st.metric("⚡ Anomaly Ratio (%)", f"{anomaly_ratio:.2f}")
+    with col8:
+        st.metric("🧠 CPU Usage (%)", cpu)
+
+    st.sidebar.metric("🧮 Memory (MB)", f"{mem:.1f}")
+
+    # --------------------------------------------------------
+    # CHARTS
+    # --------------------------------------------------------
+    all_features = [
+        c for c in df.columns
+        if c not in ["Index", "IF_Flag", "OC_Flag", "GT_Label", "Time"]
+        and pd.api.types.is_numeric_dtype(df[c])
     ]
-    df = df.dropna(subset=features)
-    return df, features
 
-
-df, features = load_data()
-st.success(f"✅ Loaded {len(df)} records | Features used: {features}")
-
-# ============================================================
-# 2. SIDEBAR SETTINGS
-# ============================================================
-st.sidebar.header("⚙️ Simulation Settings")
-train_ratio = st.sidebar.slider("Training ratio", 0.5, 0.9, 0.7, 0.05)
-delay_sec = st.sidebar.slider("Stream delay (seconds)", 0.0, 1.0, 0.15, 0.05)
-contamination = st.sidebar.slider("IsolationForest contamination", 0.01, 0.2, 0.05, 0.01)
-nu_val = st.sidebar.slider("OneClassSVM nu", 0.01, 0.2, 0.05, 0.01)
-synthetic = st.sidebar.checkbox("Inject synthetic anomalies", value=True)
-n_synth = st.sidebar.slider("Number of synthetic anomalies", 50, 400, 150, 10)
-
-# ============================================================
-# 3. FEATURE ENGINEERING & SYNTHETIC ANOMALIES
-# ============================================================
-def inject_anoms(df_in, features, n_points=150, strength=4.0):
-    df_out = df_in.copy()
-    df_out["gt_anomaly"] = 0
-    idxs = np.random.choice(len(df_out), size=min(n_points, len(df_out)), replace=False)
-    sigma = df_out[features].std().replace(0, 1e-6)
-    for i in idxs:
-        cols = np.random.choice(features, size=np.random.randint(1, len(features)), replace=False)
-        for c in cols:
-            direction = np.random.choice([+1, -1])
-            df_out.at[i, c] += direction * strength * sigma[c]
-        df_out.at[i, "gt_anomaly"] = 1
-    return df_out
-
-train_end = int(len(df) * train_ratio)
-train_df = df.iloc[:train_end].copy()
-stream_df = df.iloc[train_end:].copy().reset_index(drop=True)
-if synthetic:
-    stream_df = inject_anoms(stream_df, features, n_synth)
-    st.info(f"🔬 Injected {stream_df['gt_anomaly'].sum()} synthetic anomalies.")
-
-# ============================================================
-# 4. TRAIN MODELS
-# ============================================================
-X_train = train_df[features].values
-if_model = IsolationForest(
-    contamination=contamination, random_state=42, n_estimators=200
-)
-if_model.fit(X_train)
-
-scaler = StandardScaler()
-X_train_scaled = scaler.fit_transform(X_train)
-ocsvm = OneClassSVM(kernel="rbf", nu=nu_val, gamma="scale")
-ocsvm.fit(X_train_scaled)
-
-# ============================================================
-# 5. STREAMING SIMULATION
-# ============================================================
-st.subheader("📡 Real-time Streaming Simulation")
-col1, col2 = st.columns(2)
-chart_if = col1.line_chart(pd.DataFrame({"IF_score": []}))
-chart_oc = col2.line_chart(pd.DataFrame({"OCSVM_score": []}))
-placeholder_table = st.empty()
-
-start = st.button("▶️ Start Streaming")
-if start:
-    scores_if, scores_oc, alerts = [], [], []
-
-    progress = st.progress(0, text="Streaming in progress...")
-    for i, row in stream_df.iterrows():
-        x = row[features].values.reshape(1, -1)
-        s_if = if_model.decision_function(x)[0]
-        l_if = 0 if if_model.predict(x)[0] == 1 else 1
-
-        x_scaled = scaler.transform(x)
-        s_oc = ocsvm.decision_function(x_scaled)[0]
-        l_oc = 0 if ocsvm.predict(x_scaled)[0] == 1 else 1
-
-        scores_if.append(s_if)
-        scores_oc.append(s_oc)
-
-        chart_if.add_rows(pd.DataFrame({"IF_score": [s_if]}))
-        chart_oc.add_rows(pd.DataFrame({"OCSVM_score": [s_oc]}))
-
-        if l_if == 1 or l_oc == 1:
-            alerts.append(
-                {
-                    "Index": i,
-                    "Time": row["time"],
-                    "IF": l_if,
-                    "OC": l_oc,
-                    "airtemp": row["airtemp"],
-                    "humidity": row["relativehumidity"],
-                }
-            )
-
-        if i % 25 == 0:
-            progress.progress(i / len(stream_df), text=f"Streaming record {i}")
-            placeholder_table.dataframe(pd.DataFrame(alerts).tail(5))
-
-        time.sleep(delay_sec)
-
-    progress.empty()
-    st.success("✅ Streaming Finished")
-
-    # Alert summary
-    if alerts:
-        df_alerts = pd.DataFrame(alerts)
-        st.subheader("⚠️ Detected Anomalies (Latest 10)")
-        st.dataframe(df_alerts.tail(10))
-        st.download_button(
-            "💾 Download Alerts CSV",
-            df_alerts.to_csv(index=False).encode("utf-8"),
-            file_name="alerts.csv",
+    if show_all:
+        selected = all_features
+    else:
+        selected = st.sidebar.multiselect(
+            "📈 Select features to visualize:",
+            options=all_features,
+            default=["airtemp", "relativehumidity", "solar"]
+            if "solar" in all_features else all_features[:3],
         )
 
-        n_if = df_alerts["IF"].sum()
-        n_oc = df_alerts["OC"].sum()
-        st.write(f"**IsolationForest Alerts:** {n_if} | **OneClassSVM Alerts:** {n_oc}")
+    st.markdown("### 📡 Live Streaming Data Monitor")
+    if len(selected) > 0 and "Time" in df_disp.columns:
+        st.line_chart(df_disp.set_index("Time")[selected], width='stretch')
     else:
-        st.info("No anomalies detected.")
+        st.warning("⚠️ Please select at least one numeric feature to visualize.")
+
+    # --------------------------------------------------------
+    # TABLE
+    # --------------------------------------------------------
+    if show_table:
+        st.markdown("### 🔍 Latest Detected Anomalies")
+        if "IF_Flag" in df_disp.columns and "OC_Flag" in df_disp.columns:
+            anomalies = df_disp[(df_disp["IF_Flag"] == 1) | (df_disp["OC_Flag"] == 1)]
+            if len(anomalies) > 0:
+                st.dataframe(anomalies.tail(15), width='stretch')
+            else:
+                st.info("No anomalies detected in this window.")
+        else:
+            st.warning("Missing anomaly flag columns.")
+
+    st.caption(f"🕒 Last update: {datetime.now().strftime('%H:%M:%S')} | Refresh every {refresh_sec}s")
+
+# ------------------------------------------------------------
+# MAIN LOOP
+# ------------------------------------------------------------
+if not os.path.exists(OUTPUT_FILE):
+    st.warning("⚠️ Stream file not found. Please run **prototype_final_fixed.py** first.")
+else:
+    df = load_data(OUTPUT_FILE)
+    update_dashboard(df)
+
+    if auto_refresh:
+        time.sleep(refresh_sec)
+        st.rerun()
