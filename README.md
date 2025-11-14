@@ -1,7 +1,8 @@
 # COMP7707 / COMP7077 – Assignment 3  
 ## Real-time IoT Weather Anomaly Analytics Prototype  
+![Dashboard Screenshot](https://raw.githubusercontent.com/kungslowjam/Assignment_3_Data_mining/main/pic.jpg)
 
-**Member A – System Design & Implementation**  
+**System Design & Implementation**  
 **Dataset:** SGSC_Weather_Sensor_Data.csv (Southern Grampians Weather Sensors)
 
 ---
