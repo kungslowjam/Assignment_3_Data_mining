@@ -138,7 +138,12 @@ The dashboard uses `GT_Label` to:
 
 ### 6.1 Install Dependencies
 
-Example (adjust as needed):
+Install the required Python packages:
 
 ```bash
 pip install pandas numpy scikit-learn torch streamlit altair psutil
+python prototype.py
+streamlit run app.py
+Then open the URL printed in the terminal (normally):
+http://localhost:8501
+
